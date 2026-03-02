@@ -61,6 +61,17 @@ This enhancement upgrades the system from pixel estimation to real-world infrast
 
 ## Project Structure
 
+models/
+    cnn_binary_model.pth
+
+images/
+    test_image.jpg
+
+outputs/
+    classification_map.jpg
+    road_mask.jpg
+    surface_output.jpg
+
 ## Sample Output
 
 The system generates:
