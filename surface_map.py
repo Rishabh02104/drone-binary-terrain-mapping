@@ -12,7 +12,10 @@ MODEL_PATH = "models/cnn_binary_model.pth"
 IMAGE_PATH = "images/test_image.jpg"
 
 PATCH_SIZE = 56
-ROAD_THRESHOLD = 0.65  
+ROAD_THRESHOLD = 0.65
+
+DRONE_HEIGHT = 80  # meters
+FOV_DEG = 84       # typical DJI camera FOV (adjust if known)
 
 classes = ["Non-Road", "Road"]
 
@@ -22,7 +25,7 @@ colors = {
 }
 
 # ======================================
-# CNN MODEL (Must Match Training)
+# CNN MODEL (same as training)
 # ======================================
 
 class SimpleCNN(nn.Module):
@@ -59,7 +62,6 @@ class SimpleCNN(nn.Module):
         x = self.classifier(x)
         return x
 
-
 # ======================================
 # LOAD MODEL
 # ======================================
@@ -83,20 +85,27 @@ transform = transforms.Compose([
 # ======================================
 
 image = cv2.imread(IMAGE_PATH)
-h, w, _ = image.shape
-
-output_map = np.zeros_like(image)
-road_mask = np.zeros((h, w), dtype=np.uint8)
-
-image = cv2.imread(IMAGE_PATH)
 
 if image is None:
-    print("Error: Could not load image. Check IMAGE_PATH.")
+    print("Error: Could not load image.")
     exit()
+
+h, w, _ = image.shape
+
+# ======================================
+# PIXEL TO METER CONVERSION
+# ======================================
+
+fov_rad = np.radians(FOV_DEG)
+ground_width_m = 2 * DRONE_HEIGHT * np.tan(fov_rad / 2)
+meters_per_pixel = ground_width_m / w
 
 # ======================================
 # PATCH PROCESSING
 # ======================================
+
+output_map = np.zeros_like(image)
+road_mask = np.zeros((h, w), dtype=np.uint8)
 
 for y in range(0, h, PATCH_SIZE):
     for x in range(0, w, PATCH_SIZE):
@@ -120,8 +129,7 @@ for y in range(0, h, PATCH_SIZE):
         else:
             class_name = "Non-Road"
 
-        color = colors[class_name]
-        output_map[y:y+PATCH_SIZE, x:x+PATCH_SIZE] = color
+        output_map[y:y+PATCH_SIZE, x:x+PATCH_SIZE] = colors[class_name]
 
 # ======================================
 # BLEND RESULT
@@ -130,7 +138,7 @@ for y in range(0, h, PATCH_SIZE):
 blended = cv2.addWeighted(image, 0.6, output_map, 0.4, 0)
 
 # ======================================
-# MEASUREMENT
+# ROAD MEASUREMENT
 # ======================================
 
 contours, _ = cv2.findContours(
@@ -152,69 +160,50 @@ else:
 
     width_pixels = min(rect[1])
     length_pixels = max(rect[1])
-    road_area = cv2.contourArea(largest_contour)
+    road_area_pixels = cv2.contourArea(largest_contour)
 
-    total_pixels = h * w
-    coverage_percent = (road_area / total_pixels) * 100
+    # Convert to real-world units
+    real_length = length_pixels * meters_per_pixel
+    real_width = width_pixels * meters_per_pixel
+    real_area = road_area_pixels * (meters_per_pixel ** 2)
 
-    print("Road Length (pixels):", round(length_pixels, 2))
-    print("Road Width (pixels):", round(width_pixels, 2))
-    print("Road Area (pixels):", round(road_area, 2))
+    coverage_percent = (road_area_pixels / (h * w)) * 100
+
+    print("Road Length (meters):", round(real_length, 2))
+    print("Road Width (meters):", round(real_width, 2))
+    print("Road Area (m²):", round(real_area, 2))
     print("Road Coverage (%):", round(coverage_percent, 2))
 
     # ======================================
-    # OVERLAY TEXT
+    # OVERLAY METRICS
     # ======================================
 
     font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.rectangle(blended, (10, 10), (420, 180), (0, 0, 0), -1)
 
-    cv2.rectangle(blended, (10, 10), (380, 160), (0, 0, 0), -1)
-
-    cv2.putText(blended, "DRONE-BASED BINARY TERRAIN",
+    cv2.putText(blended, "DRONE TERRAIN ANALYSIS",
                 (20, 35), font, 0.7, (0, 255, 255), 2)
 
-    cv2.putText(blended, f"Length: {round(length_pixels,1)} px",
+    cv2.putText(blended, f"Length: {round(real_length,2)} m",
                 (20, 70), font, 0.6, (255,255,255), 2)
 
-    cv2.putText(blended, f"Width: {round(width_pixels,1)} px",
+    cv2.putText(blended, f"Width: {round(real_width,2)} m",
                 (20, 95), font, 0.6, (255,255,255), 2)
 
-    cv2.putText(blended, f"Area: {int(road_area)} px^2",
+    cv2.putText(blended, f"Area: {round(real_area,2)} m^2",
                 (20, 120), font, 0.6, (255,255,255), 2)
 
     cv2.putText(blended, f"Coverage: {round(coverage_percent,1)}%",
                 (20, 145), font, 0.6, (255,255,255), 2)
 
 # ======================================
-# LEGEND
+# SAVE OUTPUTS
 # ======================================
 
-legend_y = h - 80
+cv2.imwrite("outputs/classification_map.jpg", output_map)
+cv2.imwrite("outputs/road_mask.jpg", road_mask)
+cv2.imwrite("outputs/surface_output.jpg", blended)
 
-cv2.rectangle(blended, (20, legend_y), (45, legend_y + 25), (0,0,255), -1)
-cv2.putText(blended, "Road",
-            (55, legend_y + 18),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-
-cv2.rectangle(blended, (20, legend_y + 35), (45, legend_y + 60), (0,255,0), -1)
-cv2.putText(blended, "Non-Road",
-            (55, legend_y + 55),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
-
-# ======================================
-# SAVE & DISPLAY
-# ======================================
-
-cv2.imwrite("surface_output.jpg", blended)
-cv2.imwrite("classification_map.jpg", output_map)
-cv2.imwrite("road_mask.jpg", road_mask)
-
-print("All output images saved successfully.")
-
-cv2.imshow("Original Image", image)
-cv2.imshow("Classification Map", output_map)
-cv2.imshow("Road Mask", road_mask)
 cv2.imshow("Final Output", blended)
-
 cv2.waitKey(0)
 cv2.destroyAllWindows()
