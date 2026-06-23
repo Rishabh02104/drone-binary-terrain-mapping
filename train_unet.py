@@ -192,6 +192,12 @@ class DiceBCELoss(nn.Module):
 # =====================================
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Train U-Net road segmentation model.")
+    parser.add_argument("--epochs", type=int, default=30, help="Number of epochs to train")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size for training")
+    args = parser.parse_args()
+
     if not os.path.exists(IMAGES_DIR) or not os.path.exists(MASKS_DIR):
         print("Error: Dataset folders not found. Please setup segmentation_dataset/Images and segmentation_dataset/masks.")
         exit()
@@ -207,8 +213,8 @@ if __name__ == "__main__":
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
     model = UNet().to(DEVICE)
     criterion = DiceBCELoss()
@@ -217,8 +223,8 @@ if __name__ == "__main__":
     os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
     best_val_loss = float('inf')
 
-    print(f"\nStarting training on {DEVICE}...")
-    for epoch in range(EPOCHS):
+    print(f"\nStarting training on {DEVICE} for {args.epochs} epochs...")
+    for epoch in range(args.epochs):
         model.train()
         train_loss = 0.0
         
@@ -248,7 +254,7 @@ if __name__ == "__main__":
                 
         epoch_val_loss = val_loss / len(val_loader.dataset)
         
-        print(f"Epoch {epoch+1}/{EPOCHS} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}")
+        print(f"Epoch {epoch+1}/{args.epochs} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}")
         
         if epoch_val_loss < best_val_loss:
             best_val_loss = epoch_val_loss
