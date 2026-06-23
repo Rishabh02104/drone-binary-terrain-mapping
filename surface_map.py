@@ -210,8 +210,8 @@ def extract_metrics_and_visuals(image, road_mask,
         min_width_m = 0.0
         max_width_m = 0.0
 
-    # Total area is computed directly from the sum of all road mask pixels
-    real_area = np.sum(binary_road) * (meters_per_pixel ** 2)
+    # Total area is computed from Length * Avg Width to filter out blocky patch artifacts
+    real_area = real_length * avg_width_m
     coverage_percent = (np.sum(binary_road) / (h * w)) * 100
 
     metrics = {
