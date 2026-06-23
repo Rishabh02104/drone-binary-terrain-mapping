@@ -2,3 +2,7 @@ torch
 torchvision
 opencv-python
 numpy
+streamlit
+streamlit-drawable-canvas
+scikit-image
+scipy
