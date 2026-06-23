@@ -325,7 +325,7 @@ def process_image_unet(image, model, device,
     h, w, _ = image.shape
     
     # 1. Resize and normalize
-    img_resized = cv2.resize(image, (512, 512))
+    img_resized = cv2.resize(image, (256, 256))
     img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
     img_tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).float() / 255.0
     img_tensor = img_tensor.unsqueeze(0).to(device)

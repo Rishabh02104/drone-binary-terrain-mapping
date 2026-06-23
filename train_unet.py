@@ -15,7 +15,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 4
 EPOCHS = 30
 LR = 0.0001
-IMG_SIZE = (512, 512)
+IMG_SIZE = (256, 256)
 
 IMAGES_DIR = "segmentation_dataset/Images"
 MASKS_DIR = "segmentation_dataset/masks"
@@ -26,7 +26,7 @@ MODEL_SAVE_PATH = "models/unet_road_model.pth"
 # =====================================
 
 class RoadDataset(Dataset):
-    def __init__(self, images_dir, masks_dir, img_size=(512, 512), is_train=True):
+    def __init__(self, images_dir, masks_dir, img_size=(256, 256), is_train=True):
         self.images_dir = images_dir
         self.masks_dir = masks_dir
         self.img_size = img_size
