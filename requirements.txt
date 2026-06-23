@@ -2,7 +2,7 @@ torch
 torchvision
 opencv-python
 numpy
-streamlit
+streamlit==1.40.0
 streamlit-drawable-canvas
 scikit-image
 scipy
