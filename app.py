@@ -13,7 +13,8 @@ from surface_map import (
     process_image_patch_cnn, 
     process_image_unet, 
     process_image_multiclass,
-    trace_skeleton
+    trace_skeleton,
+    extract_metrics_and_visuals
 )
 from train_unet import UNet
 from tiled_inference import run_tiled_inference
