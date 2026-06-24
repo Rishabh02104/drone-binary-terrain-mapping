@@ -229,7 +229,7 @@ def process_large_image(image_path, model_path, lat, lon, heading, meters_per_pi
     
     # Run core geometric metric extractor
     _, metrics, skeleton, _, blended, combined_view = extract_metrics_and_visuals(
-        image, road_mask, drone_height=height, fov_deg=fov_deg, use_calibration=True
+        image, road_mask, drone_height=height, fov_deg=fov_deg, use_calibration=False
     )
     
     # Save outputs
