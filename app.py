@@ -16,6 +16,9 @@ from surface_map import (
     trace_skeleton
 )
 from train_unet import UNet
+from tiled_inference import run_tiled_inference
+from osm_compare import fetch_osm_roads, evaluate_predictions
+
 
 # Set page config
 st.set_page_config(
@@ -161,11 +164,12 @@ use_calibration = st.sidebar.checkbox("Use Known Road Width Calibration", True)
 known_width = st.sidebar.slider("Known Road Width (meters)", 1.0, 50.0, 25.0, step=0.5)
 
 # Tabs
-tab_inf, tab_ann, tab_gis, tab_multi = st.tabs([
+tab_inf, tab_ann, tab_gis, tab_multi, tab_city = st.tabs([
     "🔍 Inference & Telemetry Analysis",
     "✏️ Manual Mask Annotation Studio",
     "🌍 GIS / GeoJSON Export",
-    "🗺️ Multi-Class Terrain Map"
+    "🗺️ Multi-Class Terrain Map",
+    "🏙️ City-Scale Mapping & OSM Compare"
 ])
 
 # Shared image load helper
@@ -593,3 +597,116 @@ with tab_multi:
                         file_name="multiclass_terrain_map.png",
                         mime="image/png"
                     )
+
+# ======================================
+# TAB 5: CITY-SCALE MAPPING & OSM COMPARE
+# ======================================
+with tab_city:
+    st.subheader("Auroville Spiral Road Network Mapping & OSM Verification")
+    st.markdown("""
+    Run sliding-window tiled inference on large city-scale aerial maps of **Auroville, Tamil Nadu** (Spiral layout) and validate predicted centerlines against the live **OpenStreetMap (OSM)** database.
+    """)
+    
+    col_c1, col_c2 = st.columns([1, 2])
+    with col_c1:
+        st.subheader("🌍 Target Coordinates (Auroville Center)")
+        city_lat = st.number_input("Center Latitude", value=12.006900, format="%.6f", key="city_lat_val")
+        city_lon = st.number_input("Center Longitude", value=79.810500, format="%.6f", key="city_lon_val")
+        city_radius = st.slider("Query Bounding Box Radius (km)", 0.5, 3.0, 1.5, step=0.1, key="city_radius_val")
+        city_scale = st.number_input("Map Scale (meters per pixel)", value=0.30, format="%.4f", key="city_scale_val")
+        city_heading = st.slider("Drone Heading (degrees)", 0, 360, 0, key="city_heading_val")
+        
+        # Select image
+        source_city = st.radio("Select Map Image Source", ["Use Current Test Image", "Upload Large Custom Image"], key="src_city_radio")
+        city_img = None
+        if source_city == "Use Current Test Image":
+            city_img = cv2.imread("images/test_image.jpg")
+        else:
+            uploaded_city = st.file_uploader("Upload Large Map Image (JPG/PNG)", type=["jpg", "jpeg", "png"], key="city_upload")
+            if uploaded_city is not None:
+                file_bytes = np.asarray(bytearray(uploaded_city.read()), dtype=np.uint8)
+                city_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                
+        if city_img is not None:
+            st.image(cv2.cvtColor(city_img, cv2.COLOR_BGR2RGB), caption="Large Map Input", use_column_width=True)
+            
+    with col_c2:
+        if unet_model is None:
+            st.warning("⚠️ U-Net Model weights not found. Please train U-Net using Tab 1/CLI first.")
+        else:
+            st.success("✅ U-Net Semantic Segmentation Model Ready.")
+            
+            if st.button("🚀 Run Tiled Inference & Fetch OSM Roads", key="run_city_btn"):
+                if city_img is None:
+                    st.error("Please load a map image first.")
+                else:
+                    with st.spinner("Executing sliding-window tiled U-Net inference on map..."):
+                        # Run sliding window U-Net inference
+                        road_mask = run_tiled_inference(city_img, unet_model, device, tile_size=256, overlap=32)
+                        
+                        # Calculate scale parameters based on inputs
+                        h, w, _ = city_img.shape
+                        fov_deg = 84.0
+                        fov_rad = np.radians(fov_deg)
+                        height = (city_scale * w) / (2 * np.tan(fov_rad / 2))
+                        
+                        _, metrics, skeleton, _, blended, combined_view = extract_metrics_and_visuals(
+                            city_img, road_mask, drone_height=height, fov_deg=fov_deg, use_calibration=True
+                        )
+                        
+                        # Display combined overlay
+                        st.subheader("Model-Predicted Road Segmentation & Centerline")
+                        st.image(cv2.cvtColor(combined_view, cv2.COLOR_BGR2RGB), caption="Prediction Overlay (Blue=Centerline, Yellow=Bounding Box)", use_column_width=True)
+                        
+                        # Write local files
+                        pred_geojson_path = "outputs/predicted_roads.geojson"
+                        osm_geojson_path = "outputs/osm_roads.geojson"
+                        
+                        # Export georeferenced GeoJSON
+                        from tiled_inference import export_prediction_geojson
+                        export_prediction_geojson(skeleton, road_mask, metrics, city_lat, city_lon, city_heading, city_scale, pred_geojson_path)
+                        
+                    with st.spinner("Fetching live road database from OpenStreetMap..."):
+                        # Fetch OSM data
+                        fetch_success = fetch_osm_roads(city_lat, city_lon, city_radius, osm_geojson_path)
+                        
+                    if fetch_success:
+                        # Compare vectors
+                        with st.spinner("Calculating Precision & Recall against OSM database..."):
+                            comp_metrics = evaluate_predictions(pred_geojson_path, osm_geojson_path, distance_threshold_m=15.0)
+                            
+                        if comp_metrics:
+                            st.subheader("📊 Comparison & Accuracy Analytics")
+                            col_m1, col_m2, col_m3 = st.columns(3)
+                            with col_m1:
+                                st.metric("Map Precision (Matches OSM)", f"{comp_metrics['precision']*100:.1f}%")
+                            with col_m2:
+                                st.metric("Map Recall (OSM Coverage)", f"{comp_metrics['recall']*100:.1f}%")
+                            with col_m3:
+                                st.metric("F1-Score", f"{comp_metrics['f1_score']:.3f}")
+                                
+                            st.info(f"💡 **Unmapped Road Candidates**: Detected **{comp_metrics['new_road_candidates']}** coordinates that are not present in the current OpenStreetMap database. These represent potential new roads or unmapped structures!")
+                            
+                            # Download Buttons
+                            with open(pred_geojson_path, "r") as f:
+                                pred_data = f.read()
+                            with open(osm_geojson_path, "r") as f:
+                                osm_data = f.read()
+                                
+                            st.subheader("💾 Export GIS Layers")
+                            col_d1, col_d2 = st.columns(2)
+                            with col_d1:
+                                st.download_button(
+                                    label="💾 Download AI Predicted Road GeoJSON",
+                                    data=pred_data,
+                                    file_name="auroville_predicted_roads.geojson",
+                                    mime="application/json"
+                                )
+                            with col_d2:
+                                st.download_button(
+                                    label="💾 Download OSM Road Database GeoJSON",
+                                    data=osm_data,
+                                    file_name="auroville_osm_roads.geojson",
+                                    mime="application/json"
+                                )
+
