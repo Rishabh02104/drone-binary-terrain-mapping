@@ -609,24 +609,64 @@ with tab_city:
     
     col_c1, col_c2 = st.columns([1, 2])
     with col_c1:
-        st.subheader("🌍 Target Coordinates (Auroville Center)")
-        city_lat = st.number_input("Center Latitude", value=12.006900, format="%.6f", key="city_lat_val")
-        city_lon = st.number_input("Center Longitude", value=79.810500, format="%.6f", key="city_lon_val")
-        city_radius = st.slider("Query Bounding Box Radius (km)", 0.5, 3.0, 1.5, step=0.1, key="city_radius_val")
-        city_scale = st.number_input("Map Scale (meters per pixel)", value=0.30, format="%.4f", key="city_scale_val")
-        city_heading = st.slider("Drone Heading (degrees)", 0, 360, 0, key="city_heading_val")
+        st.subheader("Select Map Source")
+        source_city = st.radio(
+            "Select Map Image Source",
+            ["Use Current Test Image", "Use Auroville Satellite Map", "Upload Large Custom Image"],
+            key="src_city_radio"
+        )
         
-        # Select image
-        source_city = st.radio("Select Map Image Source", ["Use Current Test Image", "Upload Large Custom Image"], key="src_city_radio")
+        # Default coordinates and scale values
+        default_lat = 12.006900
+        default_lon = 79.810500
+        default_scale = 0.30
+        
         city_img = None
+        auroville_path = "images/auroville_satellite.jpg"
+        
         if source_city == "Use Current Test Image":
             city_img = cv2.imread("images/test_image.jpg")
+        elif source_city == "Use Auroville Satellite Map":
+            if not os.path.exists(auroville_path):
+                st.warning("Auroville Satellite Map not found locally.")
+                if st.button("📥 Download Auroville Satellite Map"):
+                    with st.spinner("Downloading and stitching Auroville satellite tiles (zoom=17, 3x3 grid)..."):
+                        from download_auroville_map import get_auroville_satellite_map
+                        success = get_auroville_satellite_map(
+                            lat=12.006900,
+                            lon=79.810500,
+                            zoom=17,
+                            grid_size=3,
+                            output_path=auroville_path
+                        )
+                        if success:
+                            st.success("Successfully downloaded stitched Auroville satellite map!")
+                            st.experimental_rerun()
+            else:
+                city_img = cv2.imread(auroville_path)
+                meta_path = auroville_path.replace(".jpg", "_metadata.json")
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, "r") as f:
+                            meta = json.load(f)
+                        default_lat = meta.get("center_lat", 12.006900)
+                        default_lon = meta.get("center_lon", 79.810500)
+                        default_scale = meta.get("meters_per_pixel", 1.1682)
+                    except Exception as e:
+                        pass
         else:
             uploaded_city = st.file_uploader("Upload Large Map Image (JPG/PNG)", type=["jpg", "jpeg", "png"], key="city_upload")
             if uploaded_city is not None:
                 file_bytes = np.asarray(bytearray(uploaded_city.read()), dtype=np.uint8)
                 city_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                 
+        st.subheader("🌍 Target Coordinates & Scale")
+        city_lat = st.number_input("Center Latitude", value=default_lat, format="%.6f", key="city_lat_val")
+        city_lon = st.number_input("Center Longitude", value=default_lon, format="%.6f", key="city_lon_val")
+        city_radius = st.slider("Query Bounding Box Radius (km)", 0.5, 3.0, 1.5, step=0.1, key="city_radius_val")
+        city_scale = st.number_input("Map Scale (meters per pixel)", value=default_scale, format="%.4f", key="city_scale_val")
+        city_heading = st.slider("Drone Heading (degrees)", 0, 360, 0, key="city_heading_val")
+        
         if city_img is not None:
             st.image(cv2.cvtColor(city_img, cv2.COLOR_BGR2RGB), caption="Large Map Input", use_column_width=True)
             
