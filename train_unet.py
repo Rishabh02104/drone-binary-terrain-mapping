@@ -43,7 +43,6 @@ class RoadDataset(Dataset):
         self.valid_pairs = []
         for img_name in self.images:
             base_name, _ = os.path.splitext(img_name)
-            # Find any mask file with matching base name (e.g. base_name.png, base_name.jpg)
             mask_found = False
             for ext in ['.png', '.jpg', '.jpeg']:
                 mask_name = base_name + ext
@@ -53,35 +52,97 @@ class RoadDataset(Dataset):
                     break
         
         print(f"Loaded {len(self.valid_pairs)} image-mask pairs.")
+        
+        # Determine patches per image dynamically to have about 100-150 samples per epoch
+        if len(self.valid_pairs) == 0:
+            self.patches_per_image = 0
+        elif len(self.valid_pairs) == 1:
+            self.patches_per_image = 100
+        elif len(self.valid_pairs) < 10:
+            self.patches_per_image = 20
+        else:
+            self.patches_per_image = 4
+            
+        self.total_samples = len(self.valid_pairs) * self.patches_per_image
+        print(f"Dataset configured with {self.patches_per_image} patches per image. Total training samples per epoch: {self.total_samples}")
+        
+        # Cache images and masks in memory for ultra-fast training
+        self.cached_images = []
+        self.cached_masks = []
+        if len(self.valid_pairs) > 0:
+            print("Caching dataset in memory...")
+            for img_name, mask_name in self.valid_pairs:
+                img_path = os.path.join(self.images_dir, img_name)
+                mask_path = os.path.join(self.masks_dir, mask_name)
+                
+                # Load image
+                image = cv2.imread(img_path)
+                if image is None:
+                    image = np.array(Image.open(img_path).convert("RGB"))
+                else:
+                    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                    
+                # Load mask
+                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                if mask is None:
+                    mask = np.array(Image.open(mask_path).convert("L"))
+                    
+                self.cached_images.append(image)
+                self.cached_masks.append(mask)
+            print("Caching complete.")
 
     def __len__(self):
-        return len(self.valid_pairs)
+        return self.total_samples
 
     def __getitem__(self, idx):
-        img_name, mask_name = self.valid_pairs[idx]
-        img_path = os.path.join(self.images_dir, img_name)
-        mask_path = os.path.join(self.masks_dir, mask_name)
-        
-        # Load image (OpenCV loads BGR, convert to RGB)
-        image = cv2.imread(img_path)
-        if image is None:
-            # Handle possible DNG or other formats
-            image = np.array(Image.open(img_path).convert("RGB"))
-        else:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        if len(self.valid_pairs) == 0:
+            raise IndexError("Empty dataset")
             
-        # Load mask
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        if mask is None:
-            mask = np.array(Image.open(mask_path).convert("L"))
-            
-        # Resize
-        image = cv2.resize(image, self.img_size)
-        mask = cv2.resize(mask, self.img_size, interpolation=cv2.INTER_NEAREST)
+        pair_idx = idx % len(self.valid_pairs)
+        image = self.cached_images[pair_idx]
+        mask = self.cached_masks[pair_idx]
         
-        # Normalize and convert to FloatTensors
-        image_tensor = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
-        mask_tensor = torch.from_numpy(mask).unsqueeze(0).float() / 255.0
+        h, w = mask.shape
+        th, tw = self.img_size  # (256, 256)
+        
+        # Ensure image and mask are large enough for cropping
+        if h < th or w < tw:
+            new_h = max(h, th)
+            new_w = max(w, tw)
+            image = cv2.resize(image, (new_w, new_h))
+            mask = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            h, w = mask.shape
+            
+        # Smart crop to find road pixels
+        has_road = np.any(mask > 0)
+        crop_success = False
+        
+        # Try up to 30 times to find a crop containing road
+        for _ in range(30):
+            y1 = np.random.randint(0, h - th) if h > th else 0
+            x1 = np.random.randint(0, w - tw) if w > tw else 0
+            
+            crop_mask = mask[y1:y1+th, x1:x1+tw]
+            
+            # If the image has road, try to select patches containing road with 80% probability
+            if has_road and (np.random.random() < 0.8) and (np.sum(crop_mask > 0) < 50):
+                continue
+                
+            crop_image = image[y1:y1+th, x1:x1+tw]
+            image = crop_image
+            mask = crop_mask
+            crop_success = True
+            break
+            
+        if not crop_success:
+            y1 = np.random.randint(0, h - th) if h > th else 0
+            x1 = np.random.randint(0, w - tw) if w > tw else 0
+            image = image[y1:y1+th, x1:x1+tw]
+            mask = mask[y1:y1+th, x1:x1+tw]
+            
+        # Convert to writable copies to prevent PyTorch warnings about read-only views
+        image_tensor = torch.from_numpy(image.copy()).permute(2, 0, 1).float() / 255.0
+        mask_tensor = torch.from_numpy(mask.copy()).unsqueeze(0).float() / 255.0
         
         # Threshold mask to ensure binary 0 or 1
         mask_tensor = (mask_tensor > 0.5).float()
@@ -107,29 +168,30 @@ class DoubleConv(nn.Module):
         return self.conv(x)
 
 class UNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=1):
+    def __init__(self, in_channels=3, out_channels=1, init_features=32):
         super(UNet, self).__init__()
-        self.down1 = DoubleConv(in_channels, 64)
+        features = init_features
+        self.down1 = DoubleConv(in_channels, features)
         self.pool1 = nn.MaxPool2d(2)
-        self.down2 = DoubleConv(64, 128)
+        self.down2 = DoubleConv(features, features * 2)
         self.pool2 = nn.MaxPool2d(2)
-        self.down3 = DoubleConv(128, 256)
+        self.down3 = DoubleConv(features * 2, features * 4)
         self.pool3 = nn.MaxPool2d(2)
-        self.down4 = DoubleConv(256, 512)
+        self.down4 = DoubleConv(features * 4, features * 8)
         self.pool4 = nn.MaxPool2d(2)
         
-        self.bottleneck = DoubleConv(512, 1024)
+        self.bottleneck = DoubleConv(features * 8, features * 16)
         
-        self.up4 = nn.ConvTranspose2d(1024, 512, 2, stride=2)
-        self.conv_up4 = DoubleConv(1024, 512)
-        self.up3 = nn.ConvTranspose2d(512, 256, 2, stride=2)
-        self.conv_up3 = DoubleConv(512, 256)
-        self.up2 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.conv_up2 = DoubleConv(256, 128)
-        self.up1 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.conv_up1 = DoubleConv(128, 64)
+        self.up4 = nn.ConvTranspose2d(features * 16, features * 8, 2, stride=2)
+        self.conv_up4 = DoubleConv(features * 16, features * 8)
+        self.up3 = nn.ConvTranspose2d(features * 8, features * 4, 2, stride=2)
+        self.conv_up3 = DoubleConv(features * 8, features * 4)
+        self.up2 = nn.ConvTranspose2d(features * 4, features * 2, 2, stride=2)
+        self.conv_up2 = DoubleConv(features * 4, features * 2)
+        self.up1 = nn.ConvTranspose2d(features * 2, features, 2, stride=2)
+        self.conv_up1 = DoubleConv(features * 2, features)
         
-        self.out_conv = nn.Conv2d(64, out_channels, 1)
+        self.out_conv = nn.Conv2d(features, out_channels, 1)
 
     def forward(self, x):
         d1 = self.down1(x)
