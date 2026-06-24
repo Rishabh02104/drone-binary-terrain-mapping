@@ -24,36 +24,58 @@ def pixel_to_gps(x, y, w, h, lat_c, lon_c, heading_deg, meters_per_pixel):
     return lat_c + d_lat, lon_c + d_lon
 
 # Custom tiled inference engine
-def run_tiled_inference(image, model, device, tile_size=256, overlap=32, batch_size=16):
-    h, w, _ = image.shape
+# Custom tiled inference engine
+def run_tiled_inference(image_or_path, model, device, tile_size=256, overlap=32, batch_size=16):
+    is_path = isinstance(image_or_path, str)
+    
+    if is_path:
+        # Lazy load using PIL (doesn't load pixel data into RAM immediately)
+        img = Image.open(image_or_path)
+        w, h = img.size
+    else:
+        # Image is a numpy array (BGR from OpenCV)
+        h, w, _ = image_or_path.shape
+        img = Image.fromarray(cv2.cvtColor(image_or_path, cv2.COLOR_BGR2RGB))
+        
     stride = tile_size - 2 * overlap
     
     # Calculate number of tiles needed in each dimension
     num_tiles_y = max(1, int(np.ceil((h - tile_size) / stride)) + 1)
     num_tiles_x = max(1, int(np.ceil((w - tile_size) / stride)) + 1)
     
-    # Calculate target padded dimensions (excluding outer overlap margins)
+    # Calculate target padded dimensions
     target_padded_h = (num_tiles_y - 1) * stride + tile_size
     target_padded_w = (num_tiles_x - 1) * stride + tile_size
     
-    pad_h = target_padded_h - h
-    pad_w = target_padded_w - w
-    
-    # Pad the image symmetrically
-    padded_img = cv2.copyMakeBorder(image, overlap, overlap + pad_h, overlap, overlap + pad_w, cv2.BORDER_REFLECT)
-    padded_mask = np.zeros((padded_img.shape[0], padded_img.shape[1]), dtype=np.float32)
+    # Create padded mask of size equal to target padded dimensions
+    padded_mask = np.zeros((target_padded_h, target_padded_w), dtype=np.float32)
     
     tiles = []
     positions = []
     
-    # Extract tiles using the calculated grid
+    # Extract tiles using PIL crop (automatically handles padding on borders)
     for row in range(num_tiles_y):
-        y = overlap + row * stride
+        y_pad = row * stride
+        y_start = y_pad - overlap
+        y_end = y_start + tile_size
+        
         for col in range(num_tiles_x):
-            x = overlap + col * stride
-            tile = padded_img[y-overlap : y-overlap+tile_size, x-overlap : x-overlap+tile_size]
-            tiles.append(tile)
-            positions.append((y, x))
+            x_pad = col * stride
+            x_start = x_pad - overlap
+            x_end = x_start + tile_size
+            
+            # Crop tile (PIL handles negative coordinates by padding with black/0)
+            tile = img.crop((x_start, y_start, x_end, y_end))
+            tile_np = np.array(tile)
+            
+            # Ensure shape is 3D RGB (H, W, 3)
+            if len(tile_np.shape) == 2:
+                tile_np = np.stack([tile_np] * 3, axis=-1)
+            elif tile_np.shape[2] == 4:
+                tile_np = tile_np[:, :, :3]
+                
+            tiles.append(tile_np)
+            positions.append((y_pad, x_pad))
             
     print(f"Extracted {len(tiles)} tiles of size {tile_size}x{tile_size} for sliding window inference.")
     
@@ -64,8 +86,8 @@ def run_tiled_inference(image, model, device, tile_size=256, overlap=32, batch_s
         
         tensor_list = []
         for t in batch_tiles:
-            t_rgb = cv2.cvtColor(t, cv2.COLOR_BGR2RGB)
-            t_tensor = torch.from_numpy(t_rgb).permute(2, 0, 1).float() / 255.0
+            # t is in RGB (from PIL), convert to FloatTensor
+            t_tensor = torch.from_numpy(t).permute(2, 0, 1).float() / 255.0
             tensor_list.append(t_tensor)
             
         tensor_batch = torch.stack(tensor_list).to(device)
@@ -77,13 +99,13 @@ def run_tiled_inference(image, model, device, tile_size=256, overlap=32, batch_s
         if len(probs.shape) == 2:
             probs = np.expand_dims(probs, axis=0)
             
-        # Paste predictions back (inner stride area only, to prevent boundary seam artifacts)
-        for idx, (y, x) in enumerate(batch_pos):
+        # Paste predictions back (inner stride area only)
+        for idx, (y_pad, x_pad) in enumerate(batch_pos):
             inner_prob = probs[idx, overlap : tile_size-overlap, overlap : tile_size-overlap]
-            padded_mask[y : y+stride, x : x+stride] = inner_prob
+            padded_mask[y_pad : y_pad+stride, x_pad : x_pad+stride] = inner_prob
             
     # Crop back to the original image dimensions
-    final_prob = padded_mask[overlap : overlap+h, overlap : overlap+w]
+    final_prob = padded_mask[0:h, 0:w]
     road_mask = (final_prob > 0.5).astype(np.uint8) * 255
     return road_mask
 
