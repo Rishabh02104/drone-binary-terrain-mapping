@@ -26,13 +26,19 @@ MODEL_SAVE_PATH = "models/unet_road_model.pth"
 # =====================================
 
 class RoadDataset(Dataset):
-    def __init__(self, images_dir, masks_dir, img_size=(256, 256), is_train=True):
+    def __init__(self, images_dir, masks_dir, img_size=(256, 256), domain='all'):
         self.images_dir = images_dir
         self.masks_dir = masks_dir
         self.img_size = img_size
         
         self.images = sorted([f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.dng'))])
         
+        # Filter by domain prefix if requested
+        if domain == 'campus':
+            self.images = [f for f in self.images if f.startswith("campus_")]
+        elif domain == 'auroville':
+            self.images = [f for f in self.images if f.startswith("auroville_")]
+            
         # Filter images that have a corresponding mask
         self.valid_pairs = []
         for img_name in self.images:
@@ -196,6 +202,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train U-Net road segmentation model.")
     parser.add_argument("--epochs", type=int, default=30, help="Number of epochs to train")
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size for training")
+    parser.add_argument("--domain", type=str, default="all", choices=["all", "campus", "auroville"], help="Subset of domain data to train on")
     args = parser.parse_args()
 
     if not os.path.exists(IMAGES_DIR) or not os.path.exists(MASKS_DIR):
@@ -203,18 +210,24 @@ if __name__ == "__main__":
         exit()
 
     # Load dataset
-    dataset = RoadDataset(IMAGES_DIR, MASKS_DIR, img_size=IMG_SIZE)
+    dataset = RoadDataset(IMAGES_DIR, MASKS_DIR, img_size=IMG_SIZE, domain=args.domain)
     if len(dataset) == 0:
         print("No masks found in segmentation_dataset/masks. Please annotate some images using the dashboard first!")
         exit()
 
-    # Split train/val
-    train_size = int(0.85 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    # Split train/val with safeguards for small datasets
+    if len(dataset) < 4:
+        train_dataset = dataset
+        val_dataset = dataset
+        actual_batch_size = 1
+    else:
+        train_size = int(0.85 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+        actual_batch_size = args.batch_size
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=actual_batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=actual_batch_size, shuffle=False)
 
     model = UNet().to(DEVICE)
     criterion = DiceBCELoss()
