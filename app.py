@@ -175,7 +175,11 @@ tab_inf, tab_ann, tab_gis, tab_multi, tab_city = st.tabs([
 
 # Shared image load helper
 def get_loaded_image():
-    source_img = st.radio("Image Source", ["Use Default Test Image", "Upload Custom Image"], key="src_image_radio")
+    source_img = st.radio(
+        "Image Source", 
+        ["Use Default Test Image", "Use Auroville Satellite Map", "Upload Custom Image"], 
+        key="src_image_radio"
+    )
     image = None
     if source_img == "Use Default Test Image":
         default_path = "images/test_image.jpg"
@@ -183,6 +187,12 @@ def get_loaded_image():
             image = cv2.imread(default_path)
         else:
             st.error("Default test image not found.")
+    elif source_img == "Use Auroville Satellite Map":
+        auroville_path = "images/auroville_satellite.jpg"
+        if os.path.exists(auroville_path):
+            image = cv2.imread(auroville_path)
+        else:
+            st.warning("Auroville Satellite Map not found. Go to the 'City-Scale Mapping' tab to download it first.")
     else:
         uploaded_file = st.file_uploader("Upload Drone Image (JPG/PNG)", type=["jpg", "png", "jpeg"], key="uploaded_file_loader")
         if uploaded_file is not None:
@@ -499,8 +509,26 @@ with tab_multi:
     
     with col_m_input:
         # Load image (separate file uploader so states don't clash)
-        default_p = "images/test_image.jpg"
-        multiclass_img = cv2.imread(default_p)
+        source_multi = st.radio(
+            "Select Classification Image Source",
+            ["Use Default Test Image", "Use Auroville Satellite Map", "Upload Custom Image"],
+            key="src_multi_radio"
+        )
+        multiclass_img = None
+        if source_multi == "Use Default Test Image":
+            multiclass_img = cv2.imread("images/test_image.jpg")
+        elif source_multi == "Use Auroville Satellite Map":
+            auroville_path = "images/auroville_satellite.jpg"
+            if os.path.exists(auroville_path):
+                multiclass_img = cv2.imread(auroville_path)
+            else:
+                st.warning("Auroville Satellite Map not found. Go to the 'City-Scale Mapping' tab to download it first.")
+        else:
+            uploaded_multi = st.file_uploader("Upload Image (JPG/PNG)", type=["jpg", "jpeg", "png"], key="multi_upload")
+            if uploaded_multi is not None:
+                file_bytes = np.asarray(bytearray(uploaded_multi.read()), dtype=np.uint8)
+                multiclass_img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                
         if multiclass_img is not None:
             st.image(cv2.cvtColor(multiclass_img, cv2.COLOR_BGR2RGB), caption="Classification Image", use_column_width=True)
             
@@ -613,7 +641,7 @@ with tab_city:
         st.subheader("Select Map Source")
         source_city = st.radio(
             "Select Map Image Source",
-            ["Use Current Test Image", "Use Auroville Satellite Map", "Upload Large Custom Image"],
+            ["Use Auroville Satellite Map", "Use Current Test Image", "Upload Large Custom Image"],
             key="src_city_radio"
         )
         
